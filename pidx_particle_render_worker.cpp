@@ -38,7 +38,7 @@ struct Particle {
 void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors,
     box3f &local_bounds);
 void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &particles,
-    std::vector<float> &colors, box3f &local_bounds);
+    box3f &local_bounds);
 
 int main(int argc, char **argv) {
   int provided = 0;
@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
   device.setCurrent();
 
   const int rank = mpicommon::world.rank;
-  const int worldSize = mpicommon::world.size;
+  const int world_size = mpicommon::world.size;
 
   std::unique_ptr<ClientConnection> client;
   if (rank == 0) {
@@ -102,11 +102,24 @@ int main(int argc, char **argv) {
   std::vector<float> atom_colors;
   box3f local_bounds, world_bounds;
   if (!cosmic_web_bricks.empty()) {
-    load_cosmic_web_test(cosmic_web_bricks[rank], particles, atom_colors, local_bounds);
-
+    const size_t bricks_per_rank = cosmic_web_bricks.size() / world_size;
+    for (int i = 0; i < bricks_per_rank; ++i) {
+      load_cosmic_web_test(cosmic_web_bricks[rank * bricks_per_rank + i],
+          particles, local_bounds);
+    }
+    // We just have one type of "particle" so just randomly color on each rank
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::uniform_real_distribution<float> rand_color(0.0, 1.0);
+    for (size_t j = 0; j < 3; ++j) {
+      atom_colors.push_back(rand_color(rng));
+    }
   } else {
     generate_particles(particles, atom_colors, local_bounds);
   }
+  // Extend by the particle radius
+  local_bounds.lower -= vec3f(1);
+  local_bounds.upper += vec3f(1);
 
   MPI_Reduce(&local_bounds.lower, &world_bounds.lower, 3, MPI_FLOAT, MPI_MIN,
       0, MPI_COMM_WORLD);
@@ -116,6 +129,7 @@ int main(int argc, char **argv) {
     client->send_metadata(world_bounds);
   }
 
+  std::cout << "Rank " << rank << " has " << particles.size() << " particles\n";
   Data sphere_data(particles.size() * sizeof(Particle), OSP_CHAR,
       particles.data(), OSP_DATA_SHARED_BUFFER);
   Data color_data(atom_colors.size(), OSP_FLOAT3,
@@ -134,8 +148,9 @@ int main(int argc, char **argv) {
   // TODO: Make up some region grid once we've actually got some distributed stuff
   // Though technically for opaque spheres, we don't need any bricking since
   // we just do z-compositing.
-  //std::vector<box3f> regions{pidxVolume->localRegion};
-  //ospray::cpp::Data regionData(regions.size() * 2, OSP_FLOAT3, regions.data());
+  // TODO: This bounds will be an overestimate for the cosmology data
+  std::vector<box3f> regions{local_bounds};
+  ospray::cpp::Data regionData(regions.size() * 2, OSP_FLOAT3, regions.data());
   model.addGeometry(spheres);
   model.commit();
 
@@ -258,7 +273,7 @@ std::ostream& operator<<(std::ostream &os, const CosmicWebHeader &h) {
 }
 
 void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &particles,
-    std::vector<float> &colors, box3f &local_bounds)
+    box3f &local_bounds)
 {
   std::ifstream fin(filename.c_str(), std::ios::binary);
 
@@ -272,8 +287,6 @@ void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &parti
   }
 
   std::cout << "Cosmic Web Header: " << header << "\n";
-
-  local_bounds = box3f();
 
   // Compute the brick offset for this file, given in the last 3 numbers of the name
   std::string brick_name = filename.name();
@@ -289,7 +302,7 @@ void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &parti
   const float step = 768.f;
   const vec3f offset(step * brick_x, step * brick_y, step * brick_z);
 
-  particles.reserve(header.np_local);
+  particles.reserve(particles.size() + header.np_local);
   for (int i = 0; i < header.np_local; ++i) { 
     vec3f position, velocity;
 
@@ -304,14 +317,6 @@ void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &parti
     local_bounds.lower = min(position, local_bounds.lower);
     local_bounds.upper = max(position, local_bounds.upper);
     particles.emplace_back(position, 1.0, 0);
-  }
-
-  // We just have one type of "particle" so just randomly color on each rank
-  std::random_device rd;
-  std::mt19937 rng(rd());
-  std::uniform_real_distribution<float> rand_color(0.0, 1.0);
-  for (size_t j = 0; j < 3; ++j) {
-    colors.push_back(rand_color(rng));
   }
 }
 
