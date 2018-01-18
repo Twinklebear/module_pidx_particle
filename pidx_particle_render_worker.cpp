@@ -13,15 +13,25 @@
 #include "ospray/ospray_cpp/Geometry.h"
 #include "ospray/ospray_cpp/Renderer.h"
 #include "ospray/ospray_cpp/TransferFunction.h"
-#include "ospray/ospray_cpp/Volume.h"
 #include "ospray/ospray_cpp/Model.h"
-#include "ospcommon/networking/Socket.h"
 #include "util.h"
 #include "image_util.h"
 #include "client_server.h"
 
 using namespace ospcommon;
 using namespace ospray::cpp;
+
+struct Particle {
+  osp::vec3f pos;
+  float radius;
+  int atom_type;
+
+  Particle(float x, float y, float z, float radius, int type)
+    : pos(osp::vec3f{x, y, z}), radius(radius), atom_type(type)
+    {}
+};
+
+void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors);
 
 int main(int argc, char **argv) {
   int provided = 0;
@@ -70,10 +80,31 @@ int main(int argc, char **argv) {
 
   Model model;
 
-  // TODO: Make up some region grid
+  // Generate some particles for now
+  std::vector<Particle> particles;
+  std::vector<float> atom_colors;
+  generate_particles(particles, atom_colors);
+  Data sphere_data(particles.size() * sizeof(Particle), OSP_CHAR,
+      particles.data(), OSP_DATA_SHARED_BUFFER);
+  Data color_data(atom_colors.size(), OSP_FLOAT3,
+      atom_colors.data(), OSP_DATA_SHARED_BUFFER);
+  sphere_data.commit();
+  color_data.commit();
+
+  Geometry spheres("spheres");
+  spheres.set("spheres", sphere_data);
+  spheres.set("color", color_data);
+  spheres.set("bytes_per_sphere", int(sizeof(Particle)));
+  spheres.set("offset_radius", int(sizeof(osp::vec3f)));
+  spheres.set("offset_colorID", int(sizeof(osp::vec3f) + sizeof(float)));
+  spheres.commit();
+
+  // TODO: Make up some region grid once we've actually got some distributed stuff
+  // Though technically for opaque spheres, we don't need any bricking since
+  // we just do z-compositing.
   //std::vector<box3f> regions{pidxVolume->localRegion};
   //ospray::cpp::Data regionData(regions.size() * 2, OSP_FLOAT3, regions.data());
-  //model.set("regions", regionData);
+  model.addGeometry(spheres);
   model.commit();
 
   Camera camera("perspective");
@@ -139,5 +170,29 @@ int main(int argc, char **argv) {
 
   MPI_Finalize();
   return 0;
+}
+
+void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors) {
+  std::random_device rd;
+  std::mt19937 rng(rd());
+  std::uniform_real_distribution<float> pos(-3.0, 3.0);
+  std::uniform_real_distribution<float> radius(0.15, 0.4);
+  std::uniform_int_distribution<int> type(0, 2);
+  const size_t max_type = type.max() + 1;
+
+  // Setup our particle data as a sphere geometry.
+  // Each particle is an x,y,z center position + an atom type id, which
+  // we'll use to apply different colors for the different atom types.
+  for (size_t i = 0; i < 200; ++i) {
+    particles.push_back(Particle(pos(rng), pos(rng), pos(rng),
+          radius(rng), type(rng)));
+  }
+
+  std::uniform_real_distribution<float> rand_color(0.0, 1.0);
+  for (size_t i = 0; i < max_type; ++i) {
+    for (size_t j = 0; j < 3; ++j) {
+      colors.push_back(rand_color(rng));
+    }
+  }
 }
 

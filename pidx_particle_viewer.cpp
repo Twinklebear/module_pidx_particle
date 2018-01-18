@@ -135,14 +135,14 @@ int main(int argc, const char **argv)
   AppState app;
   AppData appdata;
   // TODO: Update based on volume?
-  box3f worldBounds(vec3f(-64), vec3f(64));
+  box3f worldBounds(vec3f(-3), vec3f(3));
   Arcball arcballCamera(worldBounds);
   // Initialize openGL
   if (!glfwInit()) {
     return 1;
   }
   GLFWwindow *window = glfwCreateWindow(app.fbSize.x, app.fbSize.y,
-					"PIDX Particle OSPRay Viewer", nullptr, nullptr);
+      "PIDX Particle OSPRay Viewer", nullptr, nullptr);
 
   if (!window) {
     glfwTerminate();
