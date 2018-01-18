@@ -4,7 +4,8 @@
 
 ServerConnection::ServerConnection(const std::string &server, const int port,
     const AppState &app_state)
-  : server_host(server), server_port(port), new_frame(false), app_state(app_state)
+  : server_host(server), server_port(port), new_frame(false), app_state(app_state),
+  have_world_bounds(false)
 {
   server_thread = std::thread([&](){ connection_thread(); });
 }
@@ -21,6 +22,13 @@ bool ServerConnection::get_new_frame(std::vector<unsigned char> &buf, int &time)
     buf = jpg_buf;
     time = frame_time;
     new_frame = false;
+    return true;
+  }
+  return false;
+}
+bool ServerConnection::get_world_bounds(ospcommon::box3f &bounds) {
+  if (have_world_bounds) {
+    bounds = world_bounds;
     return true;
   }
   return false;
@@ -48,6 +56,10 @@ void ServerConnection::connection_thread() {
   SocketFabric fabric(server_host, server_port);
   ospcommon::networking::BufferedReadStream read_stream(fabric);
   ospcommon::networking::BufferedWriteStream write_stream(fabric);
+
+  // Get the world bounds from the server
+  read_stream >> world_bounds;
+  have_world_bounds = true;
 
   while (true) {
     // Receive a frame from the server
@@ -89,6 +101,9 @@ void ServerConnection::connection_thread() {
 ClientConnection::ClientConnection(const int port)
   : compressor(90), fabric(port), read_stream(fabric), write_stream(fabric)
 {}
+void ClientConnection::send_metadata(const ospcommon::box3f &world_bounds) {
+  write_stream << world_bounds;
+}
 void ClientConnection::send_frame(uint32_t *img, int width, int height, int frame_time) {
   auto jpg = compressor.compress(img, width, height);
   write_stream << jpg.second;

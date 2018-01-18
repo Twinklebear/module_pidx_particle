@@ -3,9 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <mpiCommon/MPICommon.h>
 #include <mpi.h>
 #include <unistd.h>
+#include <mpiCommon/MPICommon.h>
+#include <ospcommon/FileName.h>
 #include "ospray/ospray_cpp/Camera.h"
 #include "ospray/ospray_cpp/Data.h"
 #include "ospray/ospray_cpp/Device.h"
@@ -22,16 +23,22 @@ using namespace ospcommon;
 using namespace ospray::cpp;
 
 struct Particle {
-  osp::vec3f pos;
+  vec3f pos;
   float radius;
   int atom_type;
 
   Particle(float x, float y, float z, float radius, int type)
-    : pos(osp::vec3f{x, y, z}), radius(radius), atom_type(type)
+    : pos(x, y, z), radius(radius), atom_type(type)
+    {}
+  Particle(vec3f v, float radius, int type)
+    : pos(v), radius(radius), atom_type(type)
     {}
 };
 
-void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors);
+void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors,
+    box3f &local_bounds);
+void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &particles,
+    std::vector<float> &colors, box3f &local_bounds);
 
 int main(int argc, char **argv) {
   int provided = 0;
@@ -41,7 +48,7 @@ int main(int argc, char **argv) {
   // if you're not using OpenMPI you can change this to MPI_THREAD_MULTIPLE
   MPI_Init_thread(&argc, &argv, MPI_THREAD_SINGLE, &provided);
 
-  std::string datasetPath;
+  FileName datasetPath;
   std::vector<std::string> timestepDirs;
   AppState app;
   AppData appdata;
@@ -53,7 +60,7 @@ int main(int argc, char **argv) {
       port = std::atoi(argv[++i]);
     }
   }
-  if (datasetPath.empty()) {
+  if (datasetPath.str().empty()) {
     std::cout << "Usage: mpirun -np <N> ./pidx_render_worker [options]\n"
       << "Options:\n"
       << "-dataset <dataset.idx>\n"
@@ -83,7 +90,19 @@ int main(int argc, char **argv) {
   // Generate some particles for now
   std::vector<Particle> particles;
   std::vector<float> atom_colors;
-  generate_particles(particles, atom_colors);
+  box3f local_bounds, world_bounds;
+  if (datasetPath.ext() == "dat") {
+    load_cosmic_web_test(datasetPath, particles, atom_colors, local_bounds);
+
+  } else {
+    generate_particles(particles, atom_colors, local_bounds);
+  }
+  // TODO: a reduction
+  world_bounds = local_bounds;
+  if (rank == 0) {
+    client->send_metadata(world_bounds);
+  }
+
   Data sphere_data(particles.size() * sizeof(Particle), OSP_CHAR,
       particles.data(), OSP_DATA_SHARED_BUFFER);
   Data color_data(atom_colors.size(), OSP_FLOAT3,
@@ -95,8 +114,8 @@ int main(int argc, char **argv) {
   spheres.set("spheres", sphere_data);
   spheres.set("color", color_data);
   spheres.set("bytes_per_sphere", int(sizeof(Particle)));
-  spheres.set("offset_radius", int(sizeof(osp::vec3f)));
-  spheres.set("offset_colorID", int(sizeof(osp::vec3f) + sizeof(float)));
+  spheres.set("offset_radius", int(sizeof(vec3f)));
+  spheres.set("offset_colorID", int(sizeof(vec3f) + sizeof(float)));
   spheres.commit();
 
   // TODO: Make up some region grid once we've actually got some distributed stuff
@@ -172,9 +191,12 @@ int main(int argc, char **argv) {
   return 0;
 }
 
-void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors) {
+void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors,
+    box3f &local_bounds)
+{
   std::random_device rd;
   std::mt19937 rng(rd());
+  local_bounds = box3f(vec3f(-3.f), vec3f(3.f));
   std::uniform_real_distribution<float> pos(-3.0, 3.0);
   std::uniform_real_distribution<float> radius(0.15, 0.4);
   std::uniform_int_distribution<int> type(0, 2);
@@ -193,6 +215,80 @@ void generate_particles(std::vector<Particle> &particles, std::vector<float> &co
     for (size_t j = 0; j < 3; ++j) {
       colors.push_back(rand_color(rng));
     }
+  }
+}
+
+#pragma pack(1)
+struct CosmicWebHeader {
+  // number of particles in this dat file
+  int np_local;
+  float a, t, tau;
+  int nts;
+  float dt_f_acc, dt_pp_acc, dt_c_acc;
+  int cur_checkpoint, cur_projection, cur_halofind;
+  float massp;
+};
+std::ostream& operator<<(std::ostream &os, const CosmicWebHeader &h) {
+  os << "{\n\tnp_local = " << h.np_local
+    << "\n\ta = " << h.a
+    << "\n\tt = " << h.t
+    << "\n\ttau = " << h.tau
+    << "\n\tnts = " << h.nts
+    << "\n\tdt_f_acc = " << h.dt_f_acc
+    << "\n\tdt_pp_acc = " << h.dt_pp_acc
+    << "\n\tdt_c_acc = " << h.dt_c_acc
+    << "\n\tcur_checkpoint = " << h.cur_checkpoint
+    << "\n\tcur_halofind = " << h.cur_halofind
+    << "\n\tmassp = " << h.massp
+    << "\n}";
+  return os;
+}
+
+void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &particles,
+    std::vector<float> &colors, box3f &local_bounds)
+{
+  std::ifstream fin(filename.c_str(), std::ios::binary);
+
+  if (!fin.good()) {
+    throw std::runtime_error("could not open particle data file " + filename.str());
+  }
+
+  CosmicWebHeader header;
+  if (!fin.read(reinterpret_cast<char*>(&header), sizeof(CosmicWebHeader))) {
+    throw std::runtime_error("Failed to read header");
+  }
+
+  std::cout << "Cosmic Web Header: " << header << "\n";
+
+  local_bounds = box3f();
+
+  particles.reserve(header.np_local);
+  for (int i = 0; i < header.np_local; ++i) { 
+    vec3f position, velocity;
+
+    if (!fin.read(reinterpret_cast<char*>(&position), sizeof(vec3f))) {
+      throw std::runtime_error("Failed to read position for particle");
+    }
+    if (!fin.read(reinterpret_cast<char*>(&velocity), sizeof(vec3f))) {
+      throw std::runtime_error("Failed to read velocity for particle");
+    }
+
+    local_bounds.lower = min(position, local_bounds.lower);
+    local_bounds.upper = max(position, local_bounds.upper);
+
+    // add offset and write to output file
+    //r.x += offset.x;
+    //r.y += offset.y;
+    //r.z += offset.z;
+    particles.emplace_back(position, 1.0, 0);
+  }
+
+  // We just have one type of "particle" so just randomly color on each rank
+  std::random_device rd;
+  std::mt19937 rng(rd());
+  std::uniform_real_distribution<float> rand_color(0.0, 1.0);
+  for (size_t j = 0; j < 3; ++j) {
+    colors.push_back(rand_color(rng));
   }
 }
 

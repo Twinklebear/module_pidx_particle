@@ -23,13 +23,12 @@ std::vector<unsigned char> jpgBuf;
 // Extra stuff we need in GLFW callbacks
 struct WindowState {
   Arcball &camera;
-  vec2f prevMouse;
-  bool cameraChanged;
+  vec2f prev_mouse;
+  bool camera_changed;
   AppState &app;
-  int currentVariableIdx, currentTimestepIdx;
 
   WindowState(AppState &app, Arcball &camera)
-    : camera(camera), prevMouse(-1), cameraChanged(true), app(app)
+    : camera(camera), prev_mouse(-1), camera_changed(true), app(app)
   {}
 };
 
@@ -67,41 +66,36 @@ void cursorPosCallback(GLFWwindow *window, double x, double y) {
   WindowState *state = static_cast<WindowState*>(glfwGetWindowUserPointer(window));
 
   const vec2f mouse(x, y);
-  if (state->prevMouse != vec2f(-1)) {
+  if (state->prev_mouse != vec2f(-1)) {
     const bool leftDown =
       glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
     const bool rightDown =
       glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
     const bool middleDown =
       glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
-    const vec2f prev = state->prevMouse;
+    const vec2f prev = state->prev_mouse;
 
-    if (leftDown)
-    {
+    if (leftDown) {
       const vec2f mouseFrom(clamp(prev.x * 2.f / state->app.fbSize.x - 1.f,  -1.f, 1.f),
                             clamp(1.f - 2.f * prev.y / state->app.fbSize.y, -1.f, 1.f));
       const vec2f mouseTo  (clamp(mouse.x * 2.f / state->app.fbSize.x - 1.f,  -1.f, 1.f),
-			    clamp(1.f - 2.f * mouse.y / state->app.fbSize.y, -1.f, 1.f));
+          clamp(1.f - 2.f * mouse.y / state->app.fbSize.y, -1.f, 1.f));
       state->camera.rotate(mouseFrom, mouseTo);
-      state->cameraChanged = true;
-    }
-    else if (rightDown)
-    {
+      state->camera_changed = true;
+    } else if (rightDown) {
       state->camera.zoom(mouse.y - prev.y);
-      state->cameraChanged = true;
-    }
-    else if (middleDown)
-    {
+      state->camera_changed = true;
+    } else if (middleDown) {
       const vec2f mouseFrom(clamp(prev.x * 2.f / state->app.fbSize.x - 1.f,  -1.f, 1.f),
                             clamp(1.f - 2.f * prev.y / state->app.fbSize.y, -1.f, 1.f));
       const vec2f mouseTo   (clamp(mouse.x * 2.f / state->app.fbSize.x - 1.f,  -1.f, 1.f),
-			     clamp(1.f - 2.f * mouse.y / state->app.fbSize.y, -1.f, 1.f));
+          clamp(1.f - 2.f * mouse.y / state->app.fbSize.y, -1.f, 1.f));
       const vec2f mouseDelta = mouseTo - mouseFrom;
       state->camera.pan(mouseDelta);
-      state->cameraChanged = true;
+      state->camera_changed = true;
     }
   }
-  state->prevMouse = mouse;
+  state->prev_mouse = mouse;
 }
 
 void framebufferSizeCallback(GLFWwindow *window, int width, int height) {
@@ -134,10 +128,10 @@ int main(int argc, const char **argv)
 
   AppState app;
   AppData appdata;
-  // TODO: Update based on volume?
-  box3f worldBounds(vec3f(-3), vec3f(3));
-  Arcball arcballCamera(worldBounds);
-  // Initialize openGL
+  bool got_world_bounds = false;
+  box3f world_bounds(vec3f(-1), vec3f(1));
+  Arcball arcball_camera(world_bounds);
+
   if (!glfwInit()) {
     return 1;
   }
@@ -150,12 +144,12 @@ int main(int argc, const char **argv)
   }
   glfwMakeContextCurrent(window);
 
-  auto windowState = std::make_shared<WindowState>(app, arcballCamera);
+  auto window_state = std::make_shared<WindowState>(app, arcball_camera);
 
   ImGui_ImplGlfwGL3_Init(window, false);
   glfwSetKeyCallback(window, keyCallback);
   glfwSetCursorPosCallback(window, cursorPosCallback);
-  glfwSetWindowUserPointer(window, windowState.get());
+  glfwSetWindowUserPointer(window, window_state.get());
   glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
   glfwSetMouseButtonCallback(window, ImGui_ImplGlfwGL3_MouseButtonCallback);
   glfwSetScrollCallback(window, ImGui_ImplGlfwGL3_ScrollCallback);
@@ -179,6 +173,9 @@ int main(int argc, const char **argv)
     
     ImGui_ImplGlfwGL3_NewFrame();
 
+    if (!got_world_bounds) {
+      ImGui::Text("Waiting for server to load");
+    }
     ImGui::Text("Last frame took %dms", frameTime);
 
     ImGui::Render();
@@ -190,14 +187,21 @@ int main(int argc, const char **argv)
       app.quit = true;
     }
 
-    const vec3f eye = windowState->camera.eyePos();
-    const vec3f look = windowState->camera.lookDir();
-    const vec3f up = windowState->camera.upDir();
+    if (!got_world_bounds && server.get_world_bounds(world_bounds)) {
+      std::cout << "Got world bounds = " << world_bounds << std::endl;
+      got_world_bounds = true;
+      arcball_camera = Arcball(world_bounds);
+      window_state->camera_changed = true;
+    }
+
+    const vec3f eye = window_state->camera.eyePos();
+    const vec3f look = window_state->camera.lookDir();
+    const vec3f up = window_state->camera.upDir();
     app.v[0] = vec3f(eye.x, eye.y, eye.z);
     app.v[1] = vec3f(look.x, look.y, look.z);
     app.v[2] = vec3f(up.x, up.y, up.z);
-    app.cameraChanged = windowState->cameraChanged;
-    windowState->cameraChanged = false;
+    app.cameraChanged = window_state->camera_changed;
+    window_state->camera_changed = false;
 
     server.update_app_state(app, appdata);
 
