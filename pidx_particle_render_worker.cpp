@@ -87,9 +87,9 @@ int main(int argc, char **argv) {
   const int world_size = mpicommon::world.size;
 
   std::unique_ptr<ClientConnection> client;
+  char hostname[1024] = {0};
+  gethostname(hostname, 1023);
   if (rank == 0) {
-    char hostname[1024] = {0};
-    gethostname(hostname, 1023);
     std::cout << "Now listening for client on " << hostname << ":" << port << std::endl;
     client = ospcommon::make_unique<ClientConnection>(port);
   }
@@ -129,7 +129,8 @@ int main(int argc, char **argv) {
     client->send_metadata(world_bounds);
   }
 
-  std::cout << "Rank " << rank << " has " << particles.size() << " particles\n";
+  std::cout << "Rank " << rank << " on " << hostname
+    << " has " << particles.size() << " particles\n";
   Data sphere_data(particles.size() * sizeof(Particle), OSP_CHAR,
       particles.data(), OSP_DATA_SHARED_BUFFER);
   Data color_data(atom_colors.size(), OSP_FLOAT3,
