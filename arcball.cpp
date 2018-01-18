@@ -3,7 +3,7 @@
 using namespace ospcommon;
 
 Arcball::Arcball(const box3f &worldBounds)
-  : translation(one), rotation(one)
+  : worldCenter(worldBounds.center()), translation(one), rotation(one)
 {
   vec3f diag = worldBounds.size();
   zoomSpeed = max(length(diag) / 150.0, 0.001);
@@ -39,7 +39,8 @@ vec3f Arcball::upDir() const {
 }
 void Arcball::updateCamera() {
   const AffineSpace3f rot = LinearSpace3f(rotation);
-  const AffineSpace3f camera = translation * lookAt * rot;
+  const AffineSpace3f camera = translation * lookAt * rot
+    * AffineSpace3f::translate(-worldCenter);
   inv_camera = rcp(camera);
 }
 Quaternion3f Arcball::screenToArcball(const vec2f &p) {

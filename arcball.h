@@ -19,6 +19,7 @@ private:
   ospcommon::Quaternion3f screenToArcball(const ospcommon::vec2f &p);
 
   float zoomSpeed, motionSpeed;
+  ospcommon::vec3f worldCenter;
   ospcommon::AffineSpace3f lookAt, translation, inv_camera;
   ospcommon::Quaternion3f rotation;
 };
