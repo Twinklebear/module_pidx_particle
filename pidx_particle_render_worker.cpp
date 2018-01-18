@@ -93,16 +93,9 @@ int main(int argc, char **argv) {
   std::vector<Geometry> cosmic_web_spheres;
   size_t total_particles = 0;
   box3f local_bounds, world_bounds;
-  std::vector<float> atom_colors;
+  vec3f rank_color = hsv_to_rgb(360.f * static_cast<float>(rank) / world_size, 0.8f, 0.8f);
 
-  // We just have one type of "particle" so just randomly color on each rank
-  std::random_device rd;
-  std::mt19937 rng(rd());
-  std::uniform_real_distribution<float> rand_color(0.0, 1.0);
-  for (size_t j = 0; j < 3; ++j) {
-    atom_colors.push_back(rand_color(rng));
-  }
-  Data color_data(atom_colors.size(), OSP_FLOAT3, atom_colors.data());
+  Data color_data(3, OSP_FLOAT3, &rank_color);
   color_data.commit();
 
   const size_t bricks_per_rank = cosmic_web_bricks.size() / world_size;

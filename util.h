@@ -51,6 +51,8 @@ ospcommon::vec3i computeGrid(int num);
 std::array<int, 3> computeGhostFaces(const ospcommon::vec3i &brickId,
     const ospcommon::vec3i &grid);
 
+ospcommon::vec3f hsv_to_rgb(const float hue, const float sat, const float val);
+
 #define PIDX_CHECK(F) \
   { \
     PIDX_return_code rc = F; \

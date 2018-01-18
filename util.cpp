@@ -52,7 +52,33 @@ std::array<int, 3> computeGhostFaces(const vec3i &brickId, const vec3i &grid) {
   }
   return faces;
 }
-
+ospcommon::vec3f hsv_to_rgb(const float hue, const float sat, const float val) {
+  const float c = val * sat;
+  const int h_prime = static_cast<int>(hue / 60.0);
+  const float x = c * (1.0 - std::abs(h_prime % 2 - 1.0));
+  vec3f rgb{0, 0, 0};
+  if (h_prime >= 0 && h_prime <= 1) {
+    rgb.x = c;
+    rgb.y = x;
+  } else if (h_prime > 1 && h_prime <= 2) {
+    rgb.x = x;
+    rgb.y = c;
+  } else if (h_prime > 2 && h_prime <= 3) {
+    rgb.y = c;
+    rgb.z = x;
+  } else if (h_prime > 3 && h_prime <= 4) {
+    rgb.y = x;
+    rgb.z = c;
+  } else if (h_prime > 4 && h_prime <= 5) {
+    rgb.x = x;
+    rgb.z = c;
+  } else if (h_prime > 5 && h_prime < 6) {
+    rgb.x = c;
+    rgb.z = x;
+  }
+  const float m = val - c;
+  return rgb + ospcommon::vec3f(m, m, m);
+}
 std::string pidx_error_to_string(const PIDX_return_code rc) {
   if (rc == PIDX_success) return "PIDX_success";
   else if (rc == PIDX_err_id) return "PIDX_err_id";
