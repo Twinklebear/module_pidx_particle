@@ -38,7 +38,7 @@ if (OSPRAY_MODULE_PIDX_PARTICLE)
   ospray_create_application(pidx_particle_render_worker
     pidx_particle_render_worker.cpp
     LINK
-    pidx_app_util
+    pidx_particle_app_util
     ospray
     ospray_common
     ospray_mpi_common
