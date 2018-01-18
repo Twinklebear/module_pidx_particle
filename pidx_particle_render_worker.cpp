@@ -35,8 +35,6 @@ struct Particle {
     {}
 };
 
-void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors,
-    box3f &local_bounds);
 void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &particles,
     box3f &local_bounds);
 
@@ -48,16 +46,13 @@ int main(int argc, char **argv) {
   // if you're not using OpenMPI you can change this to MPI_THREAD_MULTIPLE
   MPI_Init_thread(&argc, &argv, MPI_THREAD_SINGLE, &provided);
 
-  FileName dataset_path;
   std::vector<FileName> cosmic_web_bricks;
   bool cosmic_web = false;
   AppState app;
   AppData appdata;
 
   for (int i = 1; i < argc; ++i) {
-    if (std::strcmp("-dataset", argv[i]) == 0) {
-      dataset_path = argv[++i];
-    } else if (std::strcmp("-port", argv[i]) == 0) {
+    if (std::strcmp("-port", argv[i]) == 0) {
       port = std::atoi(argv[++i]);
     } else if (std::strcmp("-cosmicweb", argv[i]) == 0) {
       ++i;
@@ -69,7 +64,7 @@ int main(int argc, char **argv) {
       }
     }
   }
-  if (dataset_path.str().empty() && cosmic_web_bricks.empty()) {
+  if (cosmic_web_bricks.empty()) {
     std::cout << "Usage: mpirun -np <N> ./pidx_render_worker [options]\n"
       << "Options:\n"
       << "-dataset <dataset.idx>\n"
@@ -95,28 +90,43 @@ int main(int argc, char **argv) {
   }
   MPI_Barrier(MPI_COMM_WORLD);
 
-  Model model;
-
-  // Generate some particles for now
-  std::vector<Particle> particles;
-  std::vector<float> atom_colors;
+  std::vector<Geometry> cosmic_web_spheres;
+  size_t total_particles = 0;
   box3f local_bounds, world_bounds;
-  if (!cosmic_web_bricks.empty()) {
-    const size_t bricks_per_rank = cosmic_web_bricks.size() / world_size;
-    for (int i = 0; i < bricks_per_rank; ++i) {
-      load_cosmic_web_test(cosmic_web_bricks[rank * bricks_per_rank + i],
-          particles, local_bounds);
-    }
-    // We just have one type of "particle" so just randomly color on each rank
-    std::random_device rd;
-    std::mt19937 rng(rd());
-    std::uniform_real_distribution<float> rand_color(0.0, 1.0);
-    for (size_t j = 0; j < 3; ++j) {
-      atom_colors.push_back(rand_color(rng));
-    }
-  } else {
-    generate_particles(particles, atom_colors, local_bounds);
+  std::vector<float> atom_colors;
+
+  // We just have one type of "particle" so just randomly color on each rank
+  std::random_device rd;
+  std::mt19937 rng(rd());
+  std::uniform_real_distribution<float> rand_color(0.0, 1.0);
+  for (size_t j = 0; j < 3; ++j) {
+    atom_colors.push_back(rand_color(rng));
   }
+  Data color_data(atom_colors.size(), OSP_FLOAT3, atom_colors.data());
+  color_data.commit();
+
+  const size_t bricks_per_rank = cosmic_web_bricks.size() / world_size;
+  std::vector<Particle> particles;
+  for (int i = 0; i < bricks_per_rank; ++i) {
+    particles.clear();
+    load_cosmic_web_test(cosmic_web_bricks[rank * bricks_per_rank + i],
+        particles, local_bounds);
+    total_particles += particles.size();
+
+    Data sphere_data(particles.size() * sizeof(Particle), OSP_CHAR,
+        particles.data());
+    sphere_data.commit();
+
+    Geometry spheres("spheres");
+    spheres.set("spheres", sphere_data);
+    spheres.set("color", color_data);
+    spheres.set("bytes_per_sphere", int(sizeof(Particle)));
+    spheres.set("offset_radius", int(sizeof(vec3f)));
+    spheres.set("offset_colorID", int(sizeof(vec3f) + sizeof(float)));
+    spheres.commit();
+    cosmic_web_spheres.push_back(spheres);
+  }
+
   // Extend by the particle radius
   local_bounds.lower -= vec3f(1);
   local_bounds.upper += vec3f(1);
@@ -131,20 +141,6 @@ int main(int argc, char **argv) {
 
   std::cout << "Rank " << rank << " on " << hostname
     << " has " << particles.size() << " particles\n";
-  Data sphere_data(particles.size() * sizeof(Particle), OSP_CHAR,
-      particles.data(), OSP_DATA_SHARED_BUFFER);
-  Data color_data(atom_colors.size(), OSP_FLOAT3,
-      atom_colors.data(), OSP_DATA_SHARED_BUFFER);
-  sphere_data.commit();
-  color_data.commit();
-
-  Geometry spheres("spheres");
-  spheres.set("spheres", sphere_data);
-  spheres.set("color", color_data);
-  spheres.set("bytes_per_sphere", int(sizeof(Particle)));
-  spheres.set("offset_radius", int(sizeof(vec3f)));
-  spheres.set("offset_colorID", int(sizeof(vec3f) + sizeof(float)));
-  spheres.commit();
 
   // TODO: Make up some region grid once we've actually got some distributed stuff
   // Though technically for opaque spheres, we don't need any bricking since
@@ -152,7 +148,10 @@ int main(int argc, char **argv) {
   // TODO: This bounds will be an overestimate for the cosmology data
   std::vector<box3f> regions{local_bounds};
   ospray::cpp::Data regionData(regions.size() * 2, OSP_FLOAT3, regions.data());
-  model.addGeometry(spheres);
+  Model model;
+  for (auto &s : cosmic_web_spheres) {
+    model.addGeometry(s);
+  }
   model.commit();
 
   Camera camera("perspective");
@@ -218,33 +217,6 @@ int main(int argc, char **argv) {
 
   MPI_Finalize();
   return 0;
-}
-
-void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors,
-    box3f &local_bounds)
-{
-  std::random_device rd;
-  std::mt19937 rng(rd());
-  local_bounds = box3f(vec3f(-3.f), vec3f(3.f));
-  std::uniform_real_distribution<float> pos(-3.0, 3.0);
-  std::uniform_real_distribution<float> radius(0.15, 0.4);
-  std::uniform_int_distribution<int> type(0, 2);
-  const size_t max_type = type.max() + 1;
-
-  // Setup our particle data as a sphere geometry.
-  // Each particle is an x,y,z center position + an atom type id, which
-  // we'll use to apply different colors for the different atom types.
-  for (size_t i = 0; i < 200; ++i) {
-    particles.push_back(Particle(pos(rng), pos(rng), pos(rng),
-          radius(rng), type(rng)));
-  }
-
-  std::uniform_real_distribution<float> rand_color(0.0, 1.0);
-  for (size_t i = 0; i < max_type; ++i) {
-    for (size_t j = 0; j < 3; ++j) {
-      colors.push_back(rand_color(rng));
-    }
-  }
 }
 
 #pragma pack(1)
