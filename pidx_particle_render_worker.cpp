@@ -48,19 +48,28 @@ int main(int argc, char **argv) {
   // if you're not using OpenMPI you can change this to MPI_THREAD_MULTIPLE
   MPI_Init_thread(&argc, &argv, MPI_THREAD_SINGLE, &provided);
 
-  FileName datasetPath;
-  std::vector<std::string> timestepDirs;
+  FileName dataset_path;
+  std::vector<FileName> cosmic_web_bricks;
+  bool cosmic_web = false;
   AppState app;
   AppData appdata;
 
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp("-dataset", argv[i]) == 0) {
-      datasetPath = argv[++i];
+      dataset_path = argv[++i];
     } else if (std::strcmp("-port", argv[i]) == 0) {
       port = std::atoi(argv[++i]);
+    } else if (std::strcmp("-cosmicweb", argv[i]) == 0) {
+      ++i;
+      for (; i < argc; ++i) {
+        if (argv[i][0] == '-') {
+          break;
+        }
+        cosmic_web_bricks.push_back(argv[i]);
+      }
     }
   }
-  if (datasetPath.str().empty()) {
+  if (dataset_path.str().empty() && cosmic_web_bricks.empty()) {
     std::cout << "Usage: mpirun -np <N> ./pidx_render_worker [options]\n"
       << "Options:\n"
       << "-dataset <dataset.idx>\n"
@@ -84,6 +93,7 @@ int main(int argc, char **argv) {
     std::cout << "Now listening for client on " << hostname << ":" << port << std::endl;
     client = ospcommon::make_unique<ClientConnection>(port);
   }
+  MPI_Barrier(MPI_COMM_WORLD);
 
   Model model;
 
@@ -91,14 +101,17 @@ int main(int argc, char **argv) {
   std::vector<Particle> particles;
   std::vector<float> atom_colors;
   box3f local_bounds, world_bounds;
-  if (datasetPath.ext() == "dat") {
-    load_cosmic_web_test(datasetPath, particles, atom_colors, local_bounds);
+  if (!cosmic_web_bricks.empty()) {
+    load_cosmic_web_test(cosmic_web_bricks[rank], particles, atom_colors, local_bounds);
 
   } else {
     generate_particles(particles, atom_colors, local_bounds);
   }
-  // TODO: a reduction
-  world_bounds = local_bounds;
+
+  MPI_Reduce(&local_bounds.lower, &world_bounds.lower, 3, MPI_FLOAT, MPI_MIN,
+      0, MPI_COMM_WORLD);
+  MPI_Reduce(&local_bounds.upper, &world_bounds.upper, 3, MPI_FLOAT, MPI_MAX,
+      0, MPI_COMM_WORLD);
   if (rank == 0) {
     client->send_metadata(world_bounds);
   }
@@ -262,6 +275,20 @@ void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &parti
 
   local_bounds = box3f();
 
+  // Compute the brick offset for this file, given in the last 3 numbers of the name
+  std::string brick_name = filename.name();
+  brick_name = brick_name.substr(brick_name.size() - 3, 3);
+  const int brick_number = std::stoi(brick_name);
+  // The cosmic web bricking is 8^3
+  const int brick_z = brick_number / 64;
+  const int brick_y = (brick_number / 8) % 8;
+  const int brick_x = brick_number % 8;
+  std::cout << "Brick position = { " << brick_x << ", " << brick_y
+    << ", " << brick_z << " }\n";
+  // Each cell is 768x768x768 units
+  const float step = 768.f;
+  const vec3f offset(step * brick_x, step * brick_y, step * brick_z);
+
   particles.reserve(header.np_local);
   for (int i = 0; i < header.np_local; ++i) { 
     vec3f position, velocity;
@@ -272,14 +299,10 @@ void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &parti
     if (!fin.read(reinterpret_cast<char*>(&velocity), sizeof(vec3f))) {
       throw std::runtime_error("Failed to read velocity for particle");
     }
+    position += offset;
 
     local_bounds.lower = min(position, local_bounds.lower);
     local_bounds.upper = max(position, local_bounds.upper);
-
-    // add offset and write to output file
-    //r.x += offset.x;
-    //r.y += offset.y;
-    //r.z += offset.z;
     particles.emplace_back(position, 1.0, 0);
   }
 
