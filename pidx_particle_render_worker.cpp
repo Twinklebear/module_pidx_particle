@@ -242,21 +242,27 @@ void load_pidx_particles(const FileName &filename, std::vector<Particle> &partic
   PIDX_set_physical_point(pidx_physical_size, local_dims[0], local_dims[1], local_dims[2]);
 
   double *particle_data = nullptr;
-  int particle_count = 0;
+  size_t num_particles = 0;
   PIDX_CHECK(PIDX_variable_read_particle_data_layout(variable, pidx_physical_offset,
-        pidx_physical_size, (void**)&particle_data, &particle_count, PIDX_row_major));
+        pidx_physical_size, (void**)&particle_data, &num_particles, PIDX_row_major));
 
   PIDX_CHECK(PIDX_close(pidx_file));
-
-  std::cout << "Rank " << rank << " has loaded " << particle_count << " particles\n";
 
   local_bounds.lower = local_offset;
   local_bounds.upper = local_offset + local_dims;
 
-  for (size_t i = 0; i < particle_count; ++i) {
+  for (size_t i = 0; i < num_particles; ++i) {
     particles.emplace_back(particle_data[i * 3],
         particle_data[i * 3 + 1], particle_data[i * 3 + 2], 0.05, 0);
+    // Sanity check on box query
+    if (!local_bounds.contains(particles.back().pos)) {
+      std::cout << "Read uncontained particle " << i
+       << " at " << particles.back().pos << "!\n";
+    }
   }
+
+  std::cout << "Rank " << rank << " has "
+    << num_particles << " particles, in region " << local_bounds << "\n";
 
   std::free(particle_data);
 }
