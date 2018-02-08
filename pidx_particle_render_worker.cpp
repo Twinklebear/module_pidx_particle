@@ -35,9 +35,7 @@ struct Particle {
     {}
 };
 
-void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors,
-    box3f &local_bounds);
-void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &particles,
+void load_pidx_particles(const FileName &filename, std::vector<Particle> &particles,
     box3f &local_bounds);
 
 int main(int argc, char **argv) {
@@ -49,8 +47,6 @@ int main(int argc, char **argv) {
   MPI_Init_thread(&argc, &argv, MPI_THREAD_SINGLE, &provided);
 
   FileName dataset_path;
-  std::vector<FileName> cosmic_web_bricks;
-  bool cosmic_web = false;
   AppState app;
   AppData appdata;
 
@@ -59,17 +55,11 @@ int main(int argc, char **argv) {
       dataset_path = argv[++i];
     } else if (std::strcmp("-port", argv[i]) == 0) {
       port = std::atoi(argv[++i]);
-    } else if (std::strcmp("-cosmicweb", argv[i]) == 0) {
-      ++i;
-      for (; i < argc; ++i) {
-        if (argv[i][0] == '-') {
-          break;
-        }
-        cosmic_web_bricks.push_back(argv[i]);
-      }
+    } else if (std::strcmp("-f", argv[i]) == 0) {
+      dataset_path = argv[++i];
     }
   }
-  if (dataset_path.str().empty() && cosmic_web_bricks.empty()) {
+  if (dataset_path.str().empty()) {
     std::cout << "Usage: mpirun -np <N> ./pidx_render_worker [options]\n"
       << "Options:\n"
       << "-dataset <dataset.idx>\n"
@@ -101,22 +91,18 @@ int main(int argc, char **argv) {
   std::vector<Particle> particles;
   std::vector<float> atom_colors;
   box3f local_bounds, world_bounds;
-  if (!cosmic_web_bricks.empty()) {
-    const size_t bricks_per_rank = cosmic_web_bricks.size() / world_size;
-    for (int i = 0; i < bricks_per_rank; ++i) {
-      load_cosmic_web_test(cosmic_web_bricks[rank * bricks_per_rank + i],
-          particles, local_bounds);
-    }
-    // We just have one type of "particle" so just randomly color on each rank
-    std::random_device rd;
-    std::mt19937 rng(rd());
-    std::uniform_real_distribution<float> rand_color(0.0, 1.0);
-    for (size_t j = 0; j < 3; ++j) {
-      atom_colors.push_back(rand_color(rng));
-    }
-  } else {
-    generate_particles(particles, atom_colors, local_bounds);
+  load_pidx_particles(dataset_path, particles, local_bounds);
+
+  // We just have one type of "particle" for now, so just randomly color on each rank
+  // TODO WILL: Once we start querying other attribs from PIDX this will change
+  // to color by the attribute in some way.
+  std::random_device rd;
+  std::mt19937 rng(rd());
+  std::uniform_real_distribution<float> rand_color(0.0, 1.0);
+  for (size_t j = 0; j < 3; ++j) {
+    atom_colors.push_back(rand_color(rng));
   }
+
   // Extend by the particle radius
   local_bounds.lower -= vec3f(1);
   local_bounds.upper += vec3f(1);
@@ -219,105 +205,59 @@ int main(int argc, char **argv) {
   MPI_Finalize();
   return 0;
 }
-
-void generate_particles(std::vector<Particle> &particles, std::vector<float> &colors,
+void load_pidx_particles(const FileName &filename, std::vector<Particle> &particles,
     box3f &local_bounds)
 {
-  std::random_device rd;
-  std::mt19937 rng(rd());
-  local_bounds = box3f(vec3f(-3.f), vec3f(3.f));
-  std::uniform_real_distribution<float> pos(-3.0, 3.0);
-  std::uniform_real_distribution<float> radius(0.15, 0.4);
-  std::uniform_int_distribution<int> type(0, 2);
-  const size_t max_type = type.max() + 1;
+  PIDX_access access;
+  PIDX_physical_point pdims;
+  PIDX_file pidx_file;
+  PIDX_CHECK(PIDX_create_access(&access));
+  PIDX_CHECK(PIDX_set_mpi_access(access, MPI_COMM_WORLD));
+  PIDX_CHECK(PIDX_file_open(filename.c_str(), PIDX_MODE_RDONLY,
+        access, NULL, pdims, &pidx_file));
 
-  // Setup our particle data as a sphere geometry.
-  // Each particle is an x,y,z center position + an atom type id, which
-  // we'll use to apply different colors for the different atom types.
-  for (size_t i = 0; i < 200; ++i) {
-    particles.push_back(Particle(pos(rng), pos(rng), pos(rng),
-          radius(rng), type(rng)));
+  PIDX_CHECK(PIDX_set_current_time_step(pidx_file, 0));
+  PIDX_CHECK(PIDX_set_current_variable_index(pidx_file, 0));
+
+  std::cout << "PIDX physical dims = " << pdims[0] << ", " << pdims[1] << ", " << pdims[2] << "\n";
+
+  PIDX_variable variable;
+  PIDX_CHECK(PIDX_get_current_variable(pidx_file, &variable));
+
+  const int rank = mpicommon::world.rank;
+  const int world_size = mpicommon::world.size;
+
+  const vec3i grid = computeGrid(world_size);
+  // TODO WILL: This is information we need from the file.
+  const vec3f physical_dims = vec3f(pdims[0], pdims[1], pdims[2]);
+  const vec3i brick_id(rank % grid.x, (rank / grid.x) % grid.y, rank / (grid.x * grid.y));
+
+  const vec3f local_dims = physical_dims / vec3f(grid);
+  const vec3f local_offset = local_dims * vec3f(brick_id);
+  std::cout << "Rank " << rank << " has local offset "
+    << local_offset << " and dims " << local_dims << "\n";
+
+  PIDX_physical_point pidx_physical_offset, pidx_physical_size;
+  PIDX_set_physical_point(pidx_physical_offset, local_offset[0], local_offset[1], local_offset[2]);
+  PIDX_set_physical_point(pidx_physical_size, local_dims[0], local_dims[1], local_dims[2]);
+
+  double *particle_data = nullptr;
+  int particle_count = 0;
+  PIDX_CHECK(PIDX_variable_read_particle_data_layout(variable, pidx_physical_offset,
+        pidx_physical_size, (void**)&particle_data, &particle_count, PIDX_row_major));
+
+  PIDX_CHECK(PIDX_close(pidx_file));
+
+  std::cout << "Rank " << rank << " has loaded " << particle_count << " particles\n";
+
+  local_bounds.lower = local_offset;
+  local_bounds.upper = local_offset + local_dims;
+
+  for (size_t i = 0; i < particle_count; ++i) {
+    particles.emplace_back(particle_data[i * 3],
+        particle_data[i * 3 + 1], particle_data[i * 3 + 2], 0.05, 0);
   }
 
-  std::uniform_real_distribution<float> rand_color(0.0, 1.0);
-  for (size_t i = 0; i < max_type; ++i) {
-    for (size_t j = 0; j < 3; ++j) {
-      colors.push_back(rand_color(rng));
-    }
-  }
-}
-
-#pragma pack(1)
-struct CosmicWebHeader {
-  // number of particles in this dat file
-  int np_local;
-  float a, t, tau;
-  int nts;
-  float dt_f_acc, dt_pp_acc, dt_c_acc;
-  int cur_checkpoint, cur_projection, cur_halofind;
-  float massp;
-};
-std::ostream& operator<<(std::ostream &os, const CosmicWebHeader &h) {
-  os << "{\n\tnp_local = " << h.np_local
-    << "\n\ta = " << h.a
-    << "\n\tt = " << h.t
-    << "\n\ttau = " << h.tau
-    << "\n\tnts = " << h.nts
-    << "\n\tdt_f_acc = " << h.dt_f_acc
-    << "\n\tdt_pp_acc = " << h.dt_pp_acc
-    << "\n\tdt_c_acc = " << h.dt_c_acc
-    << "\n\tcur_checkpoint = " << h.cur_checkpoint
-    << "\n\tcur_halofind = " << h.cur_halofind
-    << "\n\tmassp = " << h.massp
-    << "\n}";
-  return os;
-}
-
-void load_cosmic_web_test(const FileName &filename, std::vector<Particle> &particles,
-    box3f &local_bounds)
-{
-  std::ifstream fin(filename.c_str(), std::ios::binary);
-
-  if (!fin.good()) {
-    throw std::runtime_error("could not open particle data file " + filename.str());
-  }
-
-  CosmicWebHeader header;
-  if (!fin.read(reinterpret_cast<char*>(&header), sizeof(CosmicWebHeader))) {
-    throw std::runtime_error("Failed to read header");
-  }
-
-  std::cout << "Cosmic Web Header: " << header << "\n";
-
-  // Compute the brick offset for this file, given in the last 3 numbers of the name
-  std::string brick_name = filename.name();
-  brick_name = brick_name.substr(brick_name.size() - 3, 3);
-  const int brick_number = std::stoi(brick_name);
-  // The cosmic web bricking is 8^3
-  const int brick_z = brick_number / 64;
-  const int brick_y = (brick_number / 8) % 8;
-  const int brick_x = brick_number % 8;
-  std::cout << "Brick position = { " << brick_x << ", " << brick_y
-    << ", " << brick_z << " }\n";
-  // Each cell is 768x768x768 units
-  const float step = 768.f;
-  const vec3f offset(step * brick_x, step * brick_y, step * brick_z);
-
-  particles.reserve(particles.size() + header.np_local);
-  for (int i = 0; i < header.np_local; ++i) { 
-    vec3f position, velocity;
-
-    if (!fin.read(reinterpret_cast<char*>(&position), sizeof(vec3f))) {
-      throw std::runtime_error("Failed to read position for particle");
-    }
-    if (!fin.read(reinterpret_cast<char*>(&velocity), sizeof(vec3f))) {
-      throw std::runtime_error("Failed to read velocity for particle");
-    }
-    position += offset;
-
-    local_bounds.lower = min(position, local_bounds.lower);
-    local_bounds.upper = max(position, local_bounds.upper);
-    particles.emplace_back(position, 1.0, 0);
-  }
+  std::free(particle_data);
 }
 
