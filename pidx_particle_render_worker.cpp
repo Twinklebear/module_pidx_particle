@@ -25,13 +25,13 @@ using namespace ospray::cpp;
 struct Particle {
   vec3f pos;
   float radius;
-  int atom_type;
+  int type;
 
   Particle(float x, float y, float z, float radius, int type)
-    : pos(x, y, z), radius(radius), atom_type(type)
+    : pos(x, y, z), radius(radius), type(type)
     {}
   Particle(vec3f v, float radius, int type)
-    : pos(v), radius(radius), atom_type(type)
+    : pos(v), radius(radius), type(type)
     {}
 };
 
@@ -76,15 +76,6 @@ int main(int argc, char **argv) {
   const int rank = mpicommon::world.rank;
   const int world_size = mpicommon::world.size;
 
-  std::unique_ptr<ClientConnection> client;
-  char hostname[1024] = {0};
-  gethostname(hostname, 1023);
-  if (rank == 0) {
-    std::cout << "Now listening for client on " << hostname << ":" << port << std::endl;
-    client = ospcommon::make_unique<ClientConnection>(port);
-  }
-  MPI_Barrier(MPI_COMM_WORLD);
-
   Model model;
 
   // Generate some particles for now
@@ -93,13 +84,20 @@ int main(int argc, char **argv) {
   box3f local_bounds, world_bounds;
   load_pidx_particles(dataset_path, particles, local_bounds);
 
+  const auto type_range = std::minmax_element(particles.begin(), particles.end(),
+      [](const Particle &a, const Particle &b) {
+        return a.type < b.type;
+      });
+  std::cout << "type range = [" << type_range.first->type << ", "
+    << type_range.second->type << "]\n";
+
   // We just have one type of "particle" for now, so just randomly color on each rank
   // TODO WILL: Once we start querying other attribs from PIDX this will change
   // to color by the attribute in some way.
   std::random_device rd;
   std::mt19937 rng(rd());
   std::uniform_real_distribution<float> rand_color(0.0, 1.0);
-  for (size_t j = 0; j < 3; ++j) {
+  for (size_t j = 0; j < 3 * (type_range.second->type + 1); ++j) {
     atom_colors.push_back(rand_color(rng));
   }
 
@@ -111,10 +109,10 @@ int main(int argc, char **argv) {
       0, MPI_COMM_WORLD);
   MPI_Reduce(&local_bounds.upper, &world_bounds.upper, 3, MPI_FLOAT, MPI_MAX,
       0, MPI_COMM_WORLD);
-  if (rank == 0) {
-    client->send_metadata(world_bounds);
-  }
 
+
+  char hostname[1024] = {0};
+  gethostname(hostname, 1023);
   std::cout << "Rank " << rank << " on " << hostname
     << " has " << particles.size() << " particles\n";
   Data sphere_data(particles.size() * sizeof(Particle), OSP_CHAR,
@@ -158,6 +156,12 @@ int main(int argc, char **argv) {
   FrameBuffer fb(app.fbSize, OSP_FB_SRGBA, OSP_FB_COLOR | OSP_FB_ACCUM | OSP_FB_VARIANCE);
   fb.clear(OSP_FB_COLOR | OSP_FB_ACCUM | OSP_FB_VARIANCE);
 
+  std::unique_ptr<ClientConnection> client;
+  if (rank == 0) {
+    std::cout << "Now listening for client on " << hostname << ":" << port << std::endl;
+    client = ospcommon::make_unique<ClientConnection>(port);
+    client->send_metadata(world_bounds);
+  }
   mpicommon::world.barrier();
 
   while (!app.quit) {
@@ -216,13 +220,9 @@ void load_pidx_particles(const FileName &filename, std::vector<Particle> &partic
   PIDX_CHECK(PIDX_file_open(filename.c_str(), PIDX_MODE_RDONLY,
         access, NULL, pdims, &pidx_file));
 
-  PIDX_CHECK(PIDX_set_current_time_step(pidx_file, 0));
-  PIDX_CHECK(PIDX_set_current_variable_index(pidx_file, 0));
-
   std::cout << "PIDX physical dims = " << pdims[0] << ", " << pdims[1] << ", " << pdims[2] << "\n";
 
-  PIDX_variable variable;
-  PIDX_CHECK(PIDX_get_current_variable(pidx_file, &variable));
+  PIDX_CHECK(PIDX_set_current_time_step(pidx_file, 0));
 
   const int rank = mpicommon::world.rank;
   const int world_size = mpicommon::world.size;
@@ -241,19 +241,48 @@ void load_pidx_particles(const FileName &filename, std::vector<Particle> &partic
   PIDX_set_physical_point(pidx_physical_offset, local_offset[0], local_offset[1], local_offset[2]);
   PIDX_set_physical_point(pidx_physical_size, local_dims[0], local_dims[1], local_dims[2]);
 
-  double *particle_data = nullptr;
-  size_t num_particles = 0;
-  PIDX_CHECK(PIDX_variable_read_particle_data_layout(variable, pidx_physical_offset,
-        pidx_physical_size, (void**)&particle_data, &num_particles, PIDX_row_major));
+  int variable_count = 0;
+  PIDX_CHECK(PIDX_get_variable_count(pidx_file, &variable_count));
+  PIDX_CHECK(PIDX_set_current_variable_index(pidx_file, 0));
+
+  std::vector<std::string> var_names;
+  std::vector<PIDX_variable> vars(variable_count, PIDX_variable{});
+  std::vector<unsigned char*> particle_data(variable_count, nullptr);
+  std::vector<size_t> num_var_particles(variable_count, 0);
+  for (int i = 0; i < variable_count; ++i) {
+    PIDX_CHECK(PIDX_get_next_variable(pidx_file, &vars[i]));
+    PIDX_CHECK(PIDX_variable_read_particle_data_layout(vars[i], pidx_physical_offset,
+          pidx_physical_size, (void**)&particle_data[i], &num_var_particles[i], PIDX_row_major));
+    if (i + 1 < variable_count) {
+      PIDX_CHECK(PIDX_read_next_variable(pidx_file, vars[i]));
+    }
+    var_names.push_back(vars[i]->var_name);
+  }
 
   PIDX_CHECK(PIDX_close(pidx_file));
+  for (int i = 0; i < variable_count; ++i) {
+    std::cout << "read " << num_var_particles[i] << " particles for variable #"
+      << i << ": '" << var_names[i] << "'\n";
+  }
+
+  for (auto &num : num_var_particles) {
+    if (num != num_var_particles[0]) {
+      std::cout << "Differing number of particles for different vars: "
+        << num << " vs. " << num_var_particles[0] << std::endl;
+      throw std::runtime_error("Differing number of particles for different vars!");
+    }
+  }
 
   local_bounds.lower = local_offset;
   local_bounds.upper = local_offset + local_dims;
 
-  for (size_t i = 0; i < num_particles; ++i) {
-    particles.emplace_back(particle_data[i * 3],
-        particle_data[i * 3 + 1], particle_data[i * 3 + 2], 0.05, 0);
+  const double *position_data = reinterpret_cast<double*>(particle_data[0]);
+  const int *type_data = reinterpret_cast<int*>(particle_data[4]);
+  for (size_t i = 0; i < num_var_particles[0]; ++i) {
+    particles.emplace_back(position_data[i * 3],
+        position_data[i * 3 + 1], position_data[i * 3 + 2], 0.05, type_data[i]);
+    std::cout << particles.back().pos << ", type = "
+      << particles.back().type << "\n";
     // Sanity check on box query
     if (!local_bounds.contains(particles.back().pos)) {
       std::cout << "Read uncontained particle " << i
@@ -262,8 +291,10 @@ void load_pidx_particles(const FileName &filename, std::vector<Particle> &partic
   }
 
   std::cout << "Rank " << rank << " has "
-    << num_particles << " particles, in region " << local_bounds << "\n";
+    << num_var_particles[0] << " particles, in region " << local_bounds << "\n";
 
-  std::free(particle_data);
+  for (auto data : particle_data) {
+    std::free(data);
+  }
 }
 

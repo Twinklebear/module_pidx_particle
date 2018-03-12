@@ -29,7 +29,6 @@ if (OSPRAY_MODULE_PIDX_PARTICLE)
     ospray
     ospray_common
     ospray_mpi_common
-    ospray
     ${PIDX_LIBRARIES}
     ${MPI_CXX_LIBRARIES}
     TurboJpeg
