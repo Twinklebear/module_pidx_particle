@@ -53,7 +53,7 @@ std::array<int, 3> computeGhostFaces(const vec3i &brickId, const vec3i &grid) {
   }
   return faces;
 }
-<<<<<<< HEAD
+
 ospcommon::vec3f hsv_to_rgb(const float hue, const float sat, const float val) {
   const float c = val * sat;
   const int h_prime = static_cast<int>(hue / 60.0);
