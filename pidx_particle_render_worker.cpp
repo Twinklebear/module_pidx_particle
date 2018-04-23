@@ -213,14 +213,14 @@ void load_pidx_particles(const FileName &filename, std::vector<Particle> &partic
     box3f &local_bounds)
 {
   PIDX_access access;
-  PIDX_physical_point pdims;
+  PIDX_point dims;
   PIDX_file pidx_file;
   PIDX_CHECK(PIDX_create_access(&access));
   PIDX_CHECK(PIDX_set_mpi_access(access, MPI_COMM_WORLD));
   PIDX_CHECK(PIDX_file_open(filename.c_str(), PIDX_MODE_RDONLY,
-        access, NULL, pdims, &pidx_file));
+        access, dims, &pidx_file));
 
-  std::cout << "PIDX physical dims = " << pdims[0] << ", " << pdims[1] << ", " << pdims[2] << "\n";
+  std::cout << "PIDX dims = " << dims[0] << ", " << dims[1] << ", " << dims[2] << "\n";
 
   PIDX_CHECK(PIDX_set_current_time_step(pidx_file, 0));
 
@@ -229,7 +229,7 @@ void load_pidx_particles(const FileName &filename, std::vector<Particle> &partic
 
   const vec3i grid = computeGrid(world_size);
   // TODO WILL: This is information we need from the file.
-  const vec3f physical_dims = vec3f(pdims[0], pdims[1], pdims[2]);
+  const vec3f physical_dims = vec3f(dims[0], dims[1], dims[2]);
   const vec3i brick_id(rank % grid.x, (rank / grid.x) % grid.y, rank / (grid.x * grid.y));
 
   const vec3f local_dims = physical_dims / vec3f(grid);
