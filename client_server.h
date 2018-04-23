@@ -6,11 +6,11 @@
 #include <set>
 #include <mutex>
 #include "ospcommon/networking/Socket.h"
+#include "ospcommon/networking/SocketFabric.h"
 #include "ospcommon/box.h"
 #include "ospcommon/networking/BufferedDataStreaming.h"
 #include "util.h"
 #include "image_util.h"
-#include "socket_fabric.h"
 
 // A connection to the render worker server
 class ServerConnection {
@@ -51,7 +51,7 @@ private:
 // A client connecting to the render worker server
 class ClientConnection {
   JPGCompressor compressor;
-  SocketFabric fabric;
+  ospcommon::networking::SocketFabric fabric;
   ospcommon::networking::BufferedReadStream read_stream;
   ospcommon::networking::BufferedWriteStream write_stream;
 
