@@ -84,21 +84,28 @@ int main(int argc, char **argv) {
   box3f local_bounds, world_bounds;
   load_pidx_particles(dataset_path, particles, local_bounds);
 
-  const auto type_range = std::minmax_element(particles.begin(), particles.end(),
-      [](const Particle &a, const Particle &b) {
-        return a.type < b.type;
-      });
-  std::cout << "type range = [" << type_range.first->type << ", "
-    << type_range.second->type << "]\n";
-
-  // We just have one type of "particle" for now, so just randomly color on each rank
-  // TODO WILL: Once we start querying other attribs from PIDX this will change
-  // to color by the attribute in some way.
   std::random_device rd;
   std::mt19937 rng(rd());
   std::uniform_real_distribution<float> rand_color(0.0, 1.0);
-  for (size_t j = 0; j < 3 * (type_range.second->type + 1); ++j) {
-    atom_colors.push_back(rand_color(rng));
+  if (!particles.empty()) {
+    const auto type_range = std::minmax_element(particles.begin(), particles.end(),
+        [](const Particle &a, const Particle &b) {
+        return a.type < b.type;
+        });
+    std::cout << "type range = [" << type_range.first->type << ", "
+      << type_range.second->type << "]\n";
+
+    // We just have one type of "particle" for now, so just randomly color on each rank
+    // TODO WILL: Once we start querying other attribs from PIDX this will change
+    // to color by the attribute in some way.
+    for (size_t j = 0; j < 3 * (type_range.second->type + 1); ++j) {
+      atom_colors.push_back(rand_color(rng));
+    }
+  } else {
+    std::cerr << "WARNING: rank " << rank << " has no particles!" << std::endl;
+    for (size_t j = 0; j < 3; ++j) {
+      atom_colors.push_back(rand_color(rng));
+    }
   }
 
   // Extend by the particle radius
@@ -280,7 +287,7 @@ void load_pidx_particles(const FileName &filename, std::vector<Particle> &partic
   const int *type_data = reinterpret_cast<int*>(particle_data[4]);
   for (size_t i = 0; i < num_var_particles[0]; ++i) {
     particles.emplace_back(position_data[i * 3],
-        position_data[i * 3 + 1], position_data[i * 3 + 2], 0.05, type_data[i]);
+        position_data[i * 3 + 1], position_data[i * 3 + 2], 1, type_data[i]);
     std::cout << particles.back().pos << ", type = "
       << particles.back().type << "\n";
     // Sanity check on box query
