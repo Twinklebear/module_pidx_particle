@@ -35,8 +35,10 @@ struct Particle {
     {}
 };
 
-void load_pidx_particles(const FileName &filename, std::vector<Particle> &particles,
-    box3f &local_bounds);
+int totalTimesteps = 1;
+
+void load_pidx_particles(const FileName &filename, const int timestep,
+    std::vector<Particle> &particles, box3f &local_bounds);
 
 int main(int argc, char **argv) {
   int provided = 0;
@@ -57,6 +59,8 @@ int main(int argc, char **argv) {
       port = std::atoi(argv[++i]);
     } else if (std::strcmp("-f", argv[i]) == 0) {
       dataset_path = argv[++i];
+    } else if (std::strcmp("-timesteps", argv[i]) == 0) {
+      totalTimesteps = std::atoi(argv[++i]);
     }
   }
   if (dataset_path.str().empty()) {
@@ -82,7 +86,7 @@ int main(int argc, char **argv) {
   std::vector<Particle> particles;
   std::vector<float> atom_colors;
   box3f local_bounds, world_bounds;
-  load_pidx_particles(dataset_path, particles, local_bounds);
+  load_pidx_particles(dataset_path, 0, particles, local_bounds);
 
   std::random_device rd;
   std::mt19937 rng(rd());
@@ -90,9 +94,10 @@ int main(int argc, char **argv) {
   if (!particles.empty()) {
     const auto type_range = std::minmax_element(particles.begin(), particles.end(),
         [](const Particle &a, const Particle &b) {
-        return a.type < b.type;
+          return a.type < b.type;
         });
-    std::cout << "type range = [" << type_range.first->type << ", "
+    std::cout << "Rank " << rank
+      << " type range = [" << type_range.first->type << ", "
       << type_range.second->type << "]\n";
 
     // We just have one type of "particle" for now, so just randomly color on each rank
@@ -144,6 +149,7 @@ int main(int argc, char **argv) {
   std::vector<box3f> regions{local_bounds};
   ospray::cpp::Data regionData(regions.size() * 2, OSP_FLOAT3, regions.data());
   model.addGeometry(spheres);
+  //model.set("regions", regionData);
   model.commit();
 
   Camera camera("perspective");
@@ -157,6 +163,7 @@ int main(int argc, char **argv) {
   renderer.set("model", model);
   renderer.set("camera", camera);
   renderer.set("bgColor", vec3f(0.02));
+  renderer.set("aoSamples", 1);
   renderer.commit();
   assert(renderer);
 
@@ -171,8 +178,11 @@ int main(int argc, char **argv) {
   }
   mpicommon::world.barrier();
 
+  using namespace std::chrono;
+  auto changedTimestep = high_resolution_clock::now();
+
+  int currentTimestep = 0;
   while (!app.quit) {
-    using namespace std::chrono;
 
     if (app.cameraChanged) {
       camera.set("pos", app.v[0]);
@@ -188,6 +198,24 @@ int main(int argc, char **argv) {
     renderer.renderFrame(fb, OSP_FB_COLOR);
 
     auto endFrame = high_resolution_clock::now();
+
+    if (totalTimesteps > 1 && duration_cast<seconds>(endFrame - changedTimestep).count() >= 1) {
+      changedTimestep = high_resolution_clock::now();
+      currentTimestep = (currentTimestep + 1) % totalTimesteps;
+      std::cout << "Loading next timestep: " << currentTimestep << std::endl;
+
+      particles.clear();
+      load_pidx_particles(dataset_path, currentTimestep, particles, local_bounds);
+
+      Data sphere_data(particles.size() * sizeof(Particle), OSP_CHAR,
+          particles.data(), OSP_DATA_SHARED_BUFFER);
+      sphere_data.commit();
+
+      spheres.set("spheres", sphere_data);
+      spheres.commit();
+      model.commit();
+      fb.clear(OSP_FB_COLOR | OSP_FB_ACCUM | OSP_FB_VARIANCE);
+    }
 
     if (rank == 0) {
       const int frameTime = duration_cast<milliseconds>(endFrame - startFrame).count();
@@ -216,8 +244,8 @@ int main(int argc, char **argv) {
   MPI_Finalize();
   return 0;
 }
-void load_pidx_particles(const FileName &filename, std::vector<Particle> &particles,
-    box3f &local_bounds)
+void load_pidx_particles(const FileName &filename, const int timestep,
+    std::vector<Particle> &particles, box3f &local_bounds)
 {
   PIDX_access access;
   PIDX_point dims;
@@ -229,7 +257,7 @@ void load_pidx_particles(const FileName &filename, std::vector<Particle> &partic
 
   std::cout << "PIDX dims = " << dims[0] << ", " << dims[1] << ", " << dims[2] << "\n";
 
-  PIDX_CHECK(PIDX_set_current_time_step(pidx_file, 0));
+  PIDX_CHECK(PIDX_set_current_time_step(pidx_file, timestep));
 
   const int rank = mpicommon::world.rank;
   const int world_size = mpicommon::world.size;
@@ -285,11 +313,11 @@ void load_pidx_particles(const FileName &filename, std::vector<Particle> &partic
 
   const double *position_data = reinterpret_cast<double*>(particle_data[0]);
   const int *type_data = reinterpret_cast<int*>(particle_data[4]);
+
   for (size_t i = 0; i < num_var_particles[0]; ++i) {
     particles.emplace_back(position_data[i * 3],
         position_data[i * 3 + 1], position_data[i * 3 + 2], 1, type_data[i]);
-    std::cout << particles.back().pos << ", type = "
-      << particles.back().type << "\n";
+    //std::cout << particles.back().pos << ", type = " << particles.back().type << "\n";
     // Sanity check on box query
     if (!local_bounds.contains(particles.back().pos)) {
       std::cout << "Read uncontained particle " << i
