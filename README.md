@@ -16,7 +16,7 @@ TurboJPEG installation directory if it's not installed in a standard location.
 To run the remote viewer first start the render workers on your compute nodes.
 
 ```bash
-mpirun -np <N> ./pidx_render_worker \
+mpirun -np <N> ./pidx_particle_render_worker \
        -dataset <dataset.idx> \
        -port <port to listen on>
 ```
@@ -27,6 +27,6 @@ can then start the viewer and pass it the hostname of rank 0 and the port
 to connect to.
 
 ```bash
-./pidx_viewer -server <rank 0 hostname> -port <port to connect>
+./pidx_particle_viewer -server <rank 0 hostname> -port <port to connect>
 ```
 
