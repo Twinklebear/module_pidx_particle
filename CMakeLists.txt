@@ -47,7 +47,7 @@ if (OSPRAY_MODULE_PIDX_PARTICLE)
     )
 
   if (OSPRAY_MODULE_PIDX_PARTICLE_VIEWER)
-    find_package(GLFW REQUIRED)
+    #find_package(GLFW REQUIRED)
     include_directories(${GLFW_INCLUDE_DIRS})
     mark_as_advanced(GLFW_ROOT)
 

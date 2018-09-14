@@ -99,25 +99,31 @@ void ServerConnection::connection_thread() {
 }
 
 ClientConnection::ClientConnection(const int port)
-  : compressor(90), fabric(port), read_stream(fabric), write_stream(fabric)
-{}
+  : compressor(90)
+{
+  using namespace ospcommon::networking;
+  SocketListener listener(port);
+  fabric = std::make_shared<SocketFabric>(listener.accept());
+  read_stream = std::make_shared<BufferedReadStream>(*fabric);
+  write_stream = std::make_shared<BufferedWriteStream>(*fabric);
+}
 void ClientConnection::send_metadata(const ospcommon::box3f &world_bounds) {
-  write_stream << world_bounds;
+  *write_stream << world_bounds;
 }
 void ClientConnection::send_frame(uint32_t *img, int width, int height, int frame_time) {
   auto jpg = compressor.compress(img, width, height);
-  write_stream << jpg.second;
-  write_stream.write(jpg.first, jpg.second);
-  write_stream << frame_time;
-  write_stream.flush();
+  *write_stream << jpg.second;
+  write_stream->write(jpg.first, jpg.second);
+  *write_stream << frame_time;
+  write_stream->flush();
 }
 void ClientConnection::recieve_app_state(AppState &app, AppData &data) {
-  read_stream.read(&app, sizeof(AppState));
+  read_stream->read(&app, sizeof(AppState));
   if (app.fieldChanged) {
-    read_stream >> data.currentVariable;
+    *read_stream >> data.currentVariable;
   }
   if (app.tfcnChanged) {
-    read_stream >> data.tfcn_colors >> data.tfcn_alphas;
+    *read_stream >> data.tfcn_colors >> data.tfcn_alphas;
   }
 }
 

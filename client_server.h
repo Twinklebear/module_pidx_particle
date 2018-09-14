@@ -51,9 +51,9 @@ private:
 // A client connecting to the render worker server
 class ClientConnection {
   JPGCompressor compressor;
-  ospcommon::networking::SocketFabric fabric;
-  ospcommon::networking::BufferedReadStream read_stream;
-  ospcommon::networking::BufferedWriteStream write_stream;
+  std::shared_ptr<ospcommon::networking::SocketFabric> fabric;
+  std::shared_ptr<ospcommon::networking::BufferedReadStream> read_stream;
+  std::shared_ptr<ospcommon::networking::BufferedWriteStream> write_stream;
 
 public:
   ClientConnection(const int port);
